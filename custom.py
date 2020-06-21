@@ -1,35 +1,44 @@
+import numpy as np 
+import pandas as pd 
+import matplotlib.pyplot as plt
+import os
+
 import tensorflow as tf
 from tensorflow import keras
-import numpy as np
-import matplotlib.pyplot as plt
 
-from tensorflow.keras.preprocessing.image import ImageDataGenerator
-from tensorflow.keras.layers import Dropout, Input, Dense, Activation, BatchNormalization, Flatten, Conv2D, MaxPooling2D,AveragePooling2D
-from tensorflow.keras.applications import DenseNet121
-from tensorflow.keras.models import Sequential
-from tensorflow.keras import layers
-from tensorflow.keras.optimizers import Adam
-
-from tensorflow.keras.applications.imagenet_utils import preprocess_input
-from tensorflow.keras.preprocessing import image
-from keras.metrics import categorical_accuracy, top_k_categorical_accuracy, categorical_crossentropy
-
-print(tf.__version__)
-
-import numpy as np 
-import pandas as pd
 from sklearn.preprocessing import LabelEncoder
 from sklearn.preprocessing import OneHotEncoder
 
+from keras import layers
+from keras.preprocessing import image
+from keras.layers import Input, Dense, Activation, BatchNormalization, Flatten, Conv2D
+from keras.layers import AveragePooling2D, MaxPooling2D, Dropout
+from keras.models import Model
+
+import keras.backend as K
+from keras.models import Sequential
+
+from keras.metrics import categorical_accuracy, top_k_categorical_accuracy, categorical_crossentropy
+from keras.models import Sequential
+from keras.optimizers import Adam
+from keras.applications import MobileNet
+from keras.applications.mobilenet import preprocess_input
+from keras.callbacks import EarlyStopping, ReduceLROnPlateau, ModelCheckpoint
+
+import warnings
+warnings.simplefilter("ignore", category=DeprecationWarning)
+
+
 base_path = '/kaggle/input/140k-real-and-fake-faces/real_vs_fake/real-vs-fake/'
 
-train_df = pd.read_csv("../input/140k-real-and-fake-faces/test.csv")
+train_df = pd.read_csv("../input/140k-real-and-fake-faces/train.csv")
 valid_df = pd.read_csv("../input/140k-real-and-fake-faces/valid.csv")
 test_df = pd.read_csv("../input/140k-real-and-fake-faces/test.csv")
 
 
+
 train_df.head()
-df = pd.DataFrame(train_df[15010:15510])
+df = pd.DataFrame(train_df[50010:50510])
 df = df.append(train_df[0:500], ignore_index=True)
 
 valid_df.head()
@@ -40,77 +49,98 @@ test_df.head()
 df_test = pd.DataFrame(test_df[10010:10060])
 df_test = df_test.append(test_df[0:50], ignore_index=True)
 
-
 def prepareImages(data, m, dataset):
     print("Preparing images")
     X_train = np.zeros((m, 224, 224, 3))
     count = 0
     
     for fig in data['path']:
+        #load images into images of size 100x100x3
         img = image.load_img( base_path + fig, target_size=(224, 224, 3))
-        x = image.img_to_array( img)
+        x = image.img_to_array(img)
         x = preprocess_input(x)
+
         X_train[count] = x
+        
         print("Processing image: ", count+1, ", ", fig)
         count += 1
+    
     return X_train
 
+
 def prepare_labels(y):
-    values = np.array(y)
-    label_encoder = LabelEncoder()
-    integer_encoded = label_encoder.fit_transform(values)
-    # print(integer_encoded)
+  values = np.array(y)
+  label_encoder = LabelEncoder()
+  integer_encoded = label_encoder.fit_transform(values)
+  # print(integer_encoded)
 
-    onehot_encoder = OneHotEncoder(sparse=False)
-    integer_encoded = integer_encoded.reshape(len(integer_encoded), 1)
-    onehot_encoded = onehot_encoder.fit_transform(integer_encoded)
-    # print(onehot_encoded)
+  onehot_encoder = OneHotEncoder(sparse=False)
+  integer_encoded = integer_encoded.reshape(len(integer_encoded), 1)
+  onehot_encoded = onehot_encoder.fit_transform(integer_encoded)
+  # print(onehot_encoded)
 
-    y = onehot_encoded
-    # print(y.shape)
-    return y, label_encoder
+  y = onehot_encoded
+  # print(y.shape)
+  return y, label_encoder
 
 X = prepareImages(df, 1000, "train")
 X /= 255
 
-valid_X = prepareImages(df_valid, 100, "train")
+valid_X = prepareImages(df_z, 100, "train")
 valid_X /= 255
 
 test_X = prepareImages(df_test, 100, "train")
 test_X /= 255
 
+
 y, label_encoder = prepare_labels(df['label'])
 valid_y, valid_label_encoder = prepare_labels(df_valid['label'])
 test_y, test_label_encoder = prepare_labels(df_test['label'])
 
-model = Sequential()
 
-model.add(Conv2D(32, (7, 7), strides = (1, 1), name = 'conv0', input_shape = (224, 224, 3)))
+def make_model():    
+    model = MobileNet(input_shape=(224, 224, 3), alpha=1., weights=None, classes=2)
+    model.compile(optimizer=Adam(lr=0.002), loss='categorical_crossentropy', metrics=[categorical_crossentropy, categorical_accuracy])
+    print(model.summary())
+    return model
 
-model.add(BatchNormalization(axis = 3, name = 'bn0'))
-model.add(Activation('relu'))
+def make_or_restore_model():
+    # Either restore the latest model, or create a fresh one
+    # if there is no checkpoint available.
+    checkpoints = [checkpoint_dir + '/' + name
+                   for name in os.listdir(checkpoint_dir)]
+    if checkpoints:
+        latest_checkpoint = max(checkpoints, key=os.path.getctime)
+        print('Restoring from', latest_checkpoint)
+        return tf.keras.models.load_model(latest_checkpoint)
+    print('Creating a new model')
+    return make_model()
 
-model.add(MaxPooling2D((2, 2), name='max_pool'))
-model.add(Conv2D(64, (3, 3), strides = (1,1), name="conv1"))
-model.add(Activation('relu'))
-model.add(AveragePooling2D((3, 3), name='avg_pool'))
+model = make_or_restore_model()
+callbacks = [
+    # This callback saves a SavedModel every 100 batches.
+    # We include the training loss in the folder name.
+    ModelCheckpoint(
+        filepath=checkpoint_dir + '/ckpt-loss={loss:.2f}',
+        period=5)
+]
 
-model.add(Flatten())
-model.add(Dense(500, activation="relu", name='rl'))
-model.add(Dropout(0.8))
-model.add(Dense(2, activation='softmax', name='sm'))
+history = model.fit(X, y, epochs=20, batch_size=100, verbose=1, validation_data=(valid_X, valid_y), callbacks=callbacks)
 
-model.compile(loss='categorical_crossentropy', optimizer="adam", metrics=['accuracy'])
-model.summary()
+import pickle
+filename = 'finalized_model.sav'
+pickle.dump(model, open(filename, 'wb'))
 
-history = model.fit(X, y, epochs=20, batch_size=100, verbose=1, validation_data=(valid_X, valid_y))
+loaded_model = pickle.load(open(filename, 'rb'))
+print(loaded_model)
 
 print(history.history)
 
+plt.figure()
 plt.plot(history.history["loss"], label="training loss")
 plt.plot(history.history["val_loss"], label="validation loss")
-plt.plot(history.history["accuracy"], label="training accuracy")
-plt.plot(history.history["val_accuracy"], label="validation accuracy")
+plt.plot(history.history["categorical_accuracy"], label="training accuracy")
+plt.plot(history.history["val_categorical_accuracy"], label="validation accuracy")
 plt.title("Training/Validation Loss and Accuracy (MobileNet)")
 plt.xlabel("Epoch")
 plt.ylabel("Loss/Accuracy")
