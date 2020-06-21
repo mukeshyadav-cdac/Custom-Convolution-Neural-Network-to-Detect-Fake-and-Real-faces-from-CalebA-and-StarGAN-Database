@@ -1,8 +1,5 @@
-# TensorFlow and tf.keras
 import tensorflow as tf
 from tensorflow import keras
-
-# Helper libraries
 import numpy as np
 import matplotlib.pyplot as plt
 
@@ -15,23 +12,33 @@ from tensorflow.keras.optimizers import Adam
 
 from tensorflow.keras.applications.imagenet_utils import preprocess_input
 from tensorflow.keras.preprocessing import image
+from keras.metrics import categorical_accuracy, top_k_categorical_accuracy, categorical_crossentropy
 
 print(tf.__version__)
 
-import numpy as np
+import numpy as np 
 import pandas as pd
-
-
 from sklearn.preprocessing import LabelEncoder
 from sklearn.preprocessing import OneHotEncoder
-
 
 base_path = '/kaggle/input/140k-real-and-fake-faces/real_vs_fake/real-vs-fake/'
 
 train_df = pd.read_csv("../input/140k-real-and-fake-faces/test.csv")
+valid_df = pd.read_csv("../input/140k-real-and-fake-faces/valid.csv")
+test_df = pd.read_csv("../input/140k-real-and-fake-faces/test.csv")
 
-df = pd.DataFrame(train_df[10010:10510])
+
+train_df.head()
+df = pd.DataFrame(train_df[15010:15510])
 df = df.append(train_df[0:500], ignore_index=True)
+
+valid_df.head()
+df_valid = pd.DataFrame(valid_df[10010:10060])
+df_valid = df_valid.append(valid_df[0:50], ignore_index=True)
+
+test_df.head()
+df_test = pd.DataFrame(test_df[10010:10060])
+df_test = df_test.append(test_df[0:50], ignore_index=True)
 
 
 def prepareImages(data, m, dataset):
@@ -48,10 +55,6 @@ def prepareImages(data, m, dataset):
         count += 1
     return X_train
 
-X = prepareImages(df, 1000, "train")
-X /= 255
-
-
 def prepare_labels(y):
     values = np.array(y)
     label_encoder = LabelEncoder()
@@ -67,7 +70,18 @@ def prepare_labels(y):
     # print(y.shape)
     return y, label_encoder
 
+X = prepareImages(df, 1000, "train")
+X /= 255
+
+valid_X = prepareImages(df_valid, 100, "train")
+valid_X /= 255
+
+test_X = prepareImages(df_test, 100, "train")
+test_X /= 255
+
 y, label_encoder = prepare_labels(df['label'])
+valid_y, valid_label_encoder = prepare_labels(df_valid['label'])
+test_y, test_label_encoder = prepare_labels(df_test['label'])
 
 model = Sequential()
 
@@ -89,11 +103,42 @@ model.add(Dense(2, activation='softmax', name='sm'))
 model.compile(loss='categorical_crossentropy', optimizer="adam", metrics=['accuracy'])
 model.summary()
 
+history = model.fit(X, y, epochs=20, batch_size=100, verbose=1, validation_data=(valid_X, valid_y))
 
-history = model.fit(X, y, epochs=50, batch_size=100, verbose=1)
+print(history.history)
 
-plt.plot(history.history['accuracy'])
-plt.title('Model accuracy')
-plt.ylabel('Accuracy')
-plt.xlabel('Epoch')
-plt.show()
+plt.plot(history.history["loss"], label="training loss")
+plt.plot(history.history["val_loss"], label="validation loss")
+plt.plot(history.history["accuracy"], label="training accuracy")
+plt.plot(history.history["val_accuracy"], label="validation accuracy")
+plt.title("Training/Validation Loss and Accuracy (MobileNet)")
+plt.xlabel("Epoch")
+plt.ylabel("Loss/Accuracy")
+plt.legend()
+
+print("[INFO] evaluating network...")
+acc  = model.evaluate(test_X, test_y, batch_size=100)
+print(acc)
+
+from sklearn.metrics import classification_report
+predictions = model.predict(x=test_X, batch_size=100)
+print(classification_report(test_y.argmax(axis=1), predictions.argmax(axis=1)))
+
+y_val_cat_prob=model.predict(valid_X)
+
+from sklearn.metrics import roc_curve,roc_auc_score
+
+fpr , tpr,x  = roc_curve ( test_y.ravel() , y_val_cat_prob.ravel())
+
+def plot_roc_curve(fpr,tpr): 
+  plt.plot(fpr,tpr) 
+  plt.axis([0,1,0,1]) 
+  plt.xlabel('False Positive Rate') 
+  plt.ylabel('True Positive Rate') 
+  plt.show()    
+  
+plot_roc_curve (fpr,tpr) 
+
+auc_score=roc_auc_score(test_y.ravel() , y_val_cat_prob.ravel())  #0.8822
+
+print(auc_score)
